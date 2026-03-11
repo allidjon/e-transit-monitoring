@@ -15,6 +15,30 @@ import os
 import warnings
 warnings.filterwarnings('ignore')
 
+from github import Github
+import base64
+
+def push_to_github(local_path, repo_path="data/cached_data.parquet"):
+    token = st.secrets.get("GITHUB_TOKEN")
+    repo_name = st.secrets.get("GITHUB_REPO")
+    if not token or not repo_name:
+        return
+    try:
+        g = Github(token)
+        repo = g.get_repo(repo_name)
+        with open(local_path, "rb") as f:
+            content = f.read()
+        try:
+            existing = repo.get_contents(repo_path)
+            repo.update_file(repo_path, "Update cached data", content, existing.sha)
+        except:
+            repo.create_file(repo_path, "Add cached data", content)
+        st.sidebar.success("✅ GitHub ga saqlandi!")
+    except Exception as e:
+        st.sidebar.warning(f"GitHub saqlash: {e}")
+
+
+
 # ══════════════════════════════════════════════════════════════
 # PAGE CONFIG
 # ══════════════════════════════════════════════════════════════
@@ -282,6 +306,7 @@ def admin_upload_section():
                     st.success(f"{label} saqlandi!")
                 except Exception as e:
                     st.error(str(e))
+    push_to_github(os.path.join(DATA_DIR, "cached_data.parquet"))
 
 def user_load_data():
     p = os.path.join(DATA_DIR, "cached_data.parquet")
