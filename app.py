@@ -80,9 +80,10 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════
 # CONSTANTS
 # ══════════════════════════════════════════════════════════════
-ADMIN_PASSWORD = "sanjar1989"
-USER_PASSWORD  = "ilmiymarkaz"
+ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "sanjar1989")
+USER_PASSWORD  = st.secrets.get("USER_PASSWORD",  "ilmiymarkaz")
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 
 CYAN_SCALE   = ['#064e3b','#065f46','#047857','#059669','#10b981','#34d399','#6ee7b7','#a7f3d0','#00d4aa']
 MAIN_COLORS  = ['#00d4aa','#3b82f6','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316','#06b6d4','#84cc16']
