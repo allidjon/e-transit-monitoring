@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║  O'zbekiston Respublikasi Davlat Bojxona Qo'mitasi          ║
+║  O'zbekiston Respublikasi Bojxona Qo'mitasi          ║
 ║  E-Tranzit Monitoring Tizimi v2.1                           ║
 ║  Streamlit Professional Analytics Dashboard                 ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -1113,7 +1113,7 @@ def main():
     # Header
     st.markdown("""<div class="main-header">
         <h1>📊 E-Tranzit Monitoring Dashboard</h1>
-        <p>O'zbekiston Respublikasi Davlat Bojxona Qo'mitasi — Elektron Tranzit Monitoring Tizimi v2.1</p>
+        <p>O'zbekiston Respublikasi Bojxona Qo'mitasi — Elektron Tranzit Monitoring Tizimi v2.1</p>
     </div>""", unsafe_allow_html=True)
 
     render_kpis(df_filtered)
@@ -1135,7 +1135,7 @@ def main():
     st.markdown("""<div style="text-align:center; margin-top:40px; padding:16px;
         border-top:1px solid rgba(255,255,255,0.05);">
         <p style="color:#475569; font-size:12px;">
-            © 2025-2026 O'zbekiston Respublikasi Davlat Bojxona Qo'mitasi | E-Tranzit v2.1
+            © 2025-2026 O'zbekiston Respublikasi Bojxona Qo'mitasi | E-Tranzit v2.1
         </p></div>""", unsafe_allow_html=True)
 
 if __name__ == "__main__":
