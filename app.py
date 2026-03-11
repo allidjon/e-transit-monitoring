@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║  O'zbekiston Respublikasi Bojxona Qo'mitasi          ║
+║  O'zbekiston Respublikasi Davlat Bojxona Qo'mitasi          ║
 ║  E-Tranzit Monitoring Tizimi v2.1                           ║
 ║  Streamlit Professional Analytics Dashboard                 ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -15,29 +15,19 @@ import os
 import warnings
 warnings.filterwarnings('ignore')
 
-from github import Github
-import base64
+# Supabase (optional)
+try:
+    from supabase import create_client
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
 
-def push_to_github(local_path, repo_path="data/cached_data.parquet"):
-    token = st.secrets.get("GITHUB_TOKEN")
-    repo_name = st.secrets.get("GITHUB_REPO")
-    if not token or not repo_name:
-        return
-    try:
-        g = Github(token)
-        repo = g.get_repo(repo_name)
-        with open(local_path, "rb") as f:
-            content = f.read()
-        try:
-            existing = repo.get_contents(repo_path)
-            repo.update_file(repo_path, "Update cached data", content, existing.sha)
-        except:
-            repo.create_file(repo_path, "Add cached data", content)
-        st.sidebar.success("✅ GitHub ga saqlandi!")
-    except Exception as e:
-        st.sidebar.warning(f"GitHub saqlash: {e}")
-
-
+# Supabase (optional — agar secrets bo'lsa ishlaydi)
+try:
+    from supabase import create_client
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
 
 # ══════════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -104,10 +94,9 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════
 # CONSTANTS
 # ══════════════════════════════════════════════════════════════
-ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "sanjar1989")
-USER_PASSWORD  = st.secrets.get("USER_PASSWORD",  "ilmiymarkaz")
+ADMIN_PASSWORD = "sanjar1989"
+USER_PASSWORD  = "ilmiymarkaz"
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-os.makedirs(DATA_DIR, exist_ok=True)
 
 CYAN_SCALE   = ['#064e3b','#065f46','#047857','#059669','#10b981','#34d399','#6ee7b7','#a7f3d0','#00d4aa']
 MAIN_COLORS  = ['#00d4aa','#3b82f6','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316','#06b6d4','#84cc16']
@@ -242,6 +231,130 @@ def normalize_risk(df):
     return df
 
 # ══════════════════════════════════════════════════════════════
+# SUPABASE STORAGE
+# ══════════════════════════════════════════════════════════════
+def get_supabase():
+    if not SUPABASE_AVAILABLE:
+        return None
+    url = st.secrets.get("SUPABASE_URL", "")
+    key = st.secrets.get("SUPABASE_KEY", "")
+    if url and key:
+        try:
+            import httpx
+            # SSL tekshiruvini o'chirish (korporativ tarmoq uchun)
+            http_client = httpx.Client(verify=False)
+            client = create_client(url, key)
+            return client
+        except Exception:
+            return None
+    return None
+
+def upload_to_supabase(local_path):
+    url    = st.secrets.get("SUPABASE_URL", "")
+    key    = st.secrets.get("SUPABASE_KEY", "")
+    bucket = st.secrets.get("SUPABASE_BUCKET", "etranzit-data")
+    if not url or not key:
+        return False
+    import requests
+    import gzip, io
+
+    headers = {"Authorization": f"Bearer {key}", "apikey": key}
+
+    try:
+        # Parquet faylni o'qib optimize qilish
+        df_tmp = pd.read_parquet(local_path)
+
+        # Xotira optimizatsiya: category va int32 ga o'tkazish
+        for col in df_tmp.select_dtypes(['object']).columns:
+            if df_tmp[col].nunique() < 5000:
+                df_tmp[col] = df_tmp[col].astype('category')
+        for col in df_tmp.select_dtypes(['int64']).columns:
+            df_tmp[col] = pd.to_numeric(df_tmp[col], downcast='integer')
+        for col in df_tmp.select_dtypes(['float64']).columns:
+            df_tmp[col] = pd.to_numeric(df_tmp[col], downcast='float')
+
+        # 2 qismga bo'lish
+        mid   = len(df_tmp) // 2
+        parts = [df_tmp.iloc[:mid], df_tmp.iloc[mid:]]
+
+        for i, part in enumerate(parts):
+            fname = f"cached_data_part{i}.parquet.gz"
+
+            # Gzip compress
+            buf = io.BytesIO()
+            part.to_parquet(buf, index=False, compression='gzip')
+            compressed = buf.getvalue()
+            mb = len(compressed) / 1024 / 1024
+            st.sidebar.info(f"📦 Part {i+1}: {mb:.1f} MB")
+
+            # O'chirish
+            requests.delete(f"{url}/storage/v1/object/{bucket}/{fname}",
+                            headers=headers, verify=False)
+            # Yuklash
+            resp = requests.post(
+                f"{url}/storage/v1/object/{bucket}/{fname}",
+                headers={**headers, "Content-Type": "application/gzip"},
+                data=compressed, verify=False, timeout=180
+            )
+            if resp.status_code not in (200, 201):
+                st.sidebar.error(f"Supabase xatosi (part {i+1}): {resp.text}")
+                return False
+
+        st.sidebar.success(f"✅ Supabase ga 2 qismda saqlandi!")
+        return True
+
+    except Exception as e:
+        st.sidebar.error(f"Supabase xatosi: {e}")
+        return False
+
+
+def download_from_supabase():
+    url    = st.secrets.get("SUPABASE_URL", "")
+    key    = st.secrets.get("SUPABASE_KEY", "")
+    bucket = st.secrets.get("SUPABASE_BUCKET", "etranzit-data")
+    if not url or not key:
+        return False
+    import requests
+    import gzip, io
+
+    headers = {"Authorization": f"Bearer {key}", "apikey": key}
+    parts   = []
+
+    try:
+        for i in range(2):
+            fname = f"cached_data_part{i}.parquet.gz"
+            resp  = requests.get(
+                f"{url}/storage/v1/object/{bucket}/{fname}",
+                headers=headers, verify=False, timeout=180
+            )
+            if resp.status_code != 200:
+                # Eski fayl formatini ham sinab ko'rish
+                if i == 0:
+                    resp2 = requests.get(
+                        f"{url}/storage/v1/object/{bucket}/cached_data.parquet.gz",
+                        headers=headers, verify=False, timeout=180
+                    )
+                    if resp2.status_code == 200:
+                        decompressed = gzip.decompress(resp2.content)
+                        path = os.path.join(DATA_DIR, "cached_data.parquet")
+                        os.makedirs(DATA_DIR, exist_ok=True)
+                        with open(path, "wb") as f:
+                            f.write(decompressed)
+                        return True
+                return False
+            buf = io.BytesIO(resp.content)
+            parts.append(pd.read_parquet(buf))
+
+        df_full = pd.concat(parts, ignore_index=True)
+        path = os.path.join(DATA_DIR, "cached_data.parquet")
+        os.makedirs(DATA_DIR, exist_ok=True)
+        df_full.to_parquet(path, index=False)
+        return True
+
+    except Exception:
+        return False
+
+# ══════════════════════════════════════════════════════════════
 # LOGIN
 # ══════════════════════════════════════════════════════════════
 def login_page():
@@ -254,7 +367,7 @@ def login_page():
             E-Tranzit Monitoring Tizimi
         </h1>
         <p style="color:#94a3b8; font-size:15px; margin-bottom:40px;">
-            O'zbekiston Respublikasi Bojxona Qo'mitasi
+            O'zbekiston Respublikasi Davlat Bojxona Qo'mitasi
         </p>
     </div>""", unsafe_allow_html=True)
     _, col, _ = st.columns([1, 1.2, 1])
@@ -289,7 +402,11 @@ def admin_upload_section():
             st.session_state.data = df
             st.session_state.data_loaded = True
             st.sidebar.success(f"✅ {len(df):,} qator yuklandi!")
-            df.to_parquet(os.path.join(DATA_DIR, "cached_data.parquet"), index=False)
+            local_path = os.path.join(DATA_DIR, "cached_data.parquet")
+            os.makedirs(DATA_DIR, exist_ok=True)
+            df.to_parquet(local_path, index=False)
+            # Supabase ga saqlash
+            upload_to_supabase(local_path)
         except Exception as e:
             st.sidebar.error(f"Xatolik: {e}")
 
@@ -306,10 +423,15 @@ def admin_upload_section():
                     st.success(f"{label} saqlandi!")
                 except Exception as e:
                     st.error(str(e))
-    push_to_github(os.path.join(DATA_DIR, "cached_data.parquet"))
 
 def user_load_data():
     p = os.path.join(DATA_DIR, "cached_data.parquet")
+    # Lokal yo'q bo'lsa Supabase dan yukla
+    if not os.path.exists(p):
+        with st.spinner("☁️ Ma'lumot Supabase dan yuklanmoqda..."):
+            ok = download_from_supabase()
+            if not ok:
+                return
     if os.path.exists(p):
         df = pd.read_parquet(p)
         if 'CHECKINTIME' in df.columns:
@@ -486,16 +608,16 @@ def render_post_map(df, post_coords, countries_uz):
         marker=dict(
             size=merged['bsize'],
             color=merged['Brutto_sum'],
-            colorscale=[[0,'#064e3b'],[0.3,'#059669'],[0.6,'#f59e0b'],[1,'#ef4444']],
+            colorscale=[[0,'#0ea5e9'],[0.3,'#6366f1'],[0.6,'#f59e0b'],[1,'#ef4444']],
             colorbar=dict(
-                title=dict(text="Brutto (kg)", font=dict(color='#e0e0e0')),
-                tickfont=dict(color='#e0e0e0')
+                title=dict(text="Brutto (kg)", font=dict(color='#1e293b')),
+                tickfont=dict(color='#1e293b')
             ),
-            opacity=0.88, sizemode='diameter',
+            opacity=0.82, sizemode='diameter',
         ),
         text=merged[name_col],
         textposition='top center',
-        textfont=dict(size=11, color='#e0e0e0'),
+        textfont=dict(size=11, color='#1e293b'),
         customdata=np.column_stack([
             merged[name_col],
             merged['Brutto_sum'].apply(fmt),
@@ -514,9 +636,16 @@ def render_post_map(df, post_coords, countries_uz):
         ),
     ))
     fig.update_layout(
-        mapbox=dict(style='carto-darkmatter', center=dict(lat=41.0, lon=64.5), zoom=5.2),
-        paper_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=0,b=0),
-        height=560, font=dict(color='#e0e0e0'),
+        mapbox=dict(
+            style='carto-positron',  # Yorqin oq-kulrang stil
+            center=dict(lat=41.0, lon=64.5),
+            zoom=5.2
+        ),
+        paper_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=680,
+        font=dict(color='#1a1a2e'),
+        uirevision='post_map',
     )
     st.plotly_chart(fig, use_container_width=True, key="post_map_main")
 
@@ -629,16 +758,16 @@ def render_world_map(df, countries_uz, countries_en):
                 marker=dict(
                     size=agg_v['bsize'],
                     color=agg_v['Brutto'],
-                    colorscale=[[0,'#064e3b'],[0.3,'#059669'],[0.6,'#3b82f6'],[1,'#00d4aa']],
+                    colorscale=[[0,'#0ea5e9'],[0.4,'#6366f1'],[0.7,'#f59e0b'],[1,'#ef4444']],
                     colorbar=dict(
-                        title=dict(text="Brutto (kg)", font=dict(color='#e0e0e0')),
-                        tickfont=dict(color='#e0e0e0')
+                        title=dict(text="Brutto (kg)", font=dict(color='#1e293b')),
+                        tickfont=dict(color='#1e293b')
                     ),
-                    opacity=0.85, sizemode='diameter',
+                    opacity=0.82, sizemode='diameter',
                 ),
                 text=agg_v['DavlatNom'],
                 textposition='top center',
-                textfont=dict(size=10, color='#e0e0e0'),
+                textfont=dict(size=10, color='#1e293b'),
                 customdata=np.column_stack([
                     agg_v['DavlatNom'],
                     agg_v['Brutto'].apply(fmt),
@@ -652,9 +781,16 @@ def render_world_map(df, countries_uz, countries_en):
                 ),
             ))
             fig.update_layout(
-                mapbox=dict(style='carto-darkmatter', center=dict(lat=30, lon=60), zoom=1.8),
-                paper_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=0,b=0),
-                height=540, font=dict(color='#e0e0e0'),
+                mapbox=dict(
+                    style='carto-positron',
+                    center=dict(lat=30, lon=60),
+                    zoom=1.8
+                ),
+                paper_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=680,
+                font=dict(color='#1e293b'),
+                uirevision='world_map',
             )
             st.plotly_chart(fig, use_container_width=True, key="world_bubble_map")
         else:
@@ -691,13 +827,14 @@ def render_world_map(df, countries_uz, countries_en):
             st.plotly_chart(fig, use_container_width=True, key="world_choropleth")
 
     # Top-20 davlat barchart
-    st.markdown('<div class="section-header">📊 Top-20 davlat Brutto bo\'yicha</div>',
+    st.markdown('<div class="section-header">📊 Top-20 davlat Brutto bo\'yicha (ming tonna)</div>',
                 unsafe_allow_html=True)
-    top20 = agg.nlargest(20, 'Brutto')
-    f2 = px.bar(top20, x='Brutto', y='DavlatNom', orientation='h',
-                color='Brutto', color_continuous_scale=CYAN_SCALE,
-                text=top20['Brutto'].apply(fmt),
-                labels={'Brutto':'Brutto (kg)','DavlatNom':''})
+    top20 = agg.nlargest(20, 'Brutto').copy()
+    top20['Brutto_mt'] = top20['Brutto'] / 1_000_000
+    f2 = px.bar(top20, x='Brutto_mt', y='DavlatNom', orientation='h',
+                color='Brutto_mt', color_continuous_scale=CYAN_SCALE,
+                text=top20['Brutto_mt'].apply(lambda x: f"{x:,.1f}"),
+                labels={'Brutto_mt':'Brutto (ming tonna)','DavlatNom':''})
     f2.update_traces(textposition='outside', textfont=dict(size=10,color='#e0e0e0'))
     f2 = make_dark(f2, height=520)
     f2.update_layout(yaxis=dict(autorange='reversed'), coloraxis_showscale=False)
@@ -736,20 +873,22 @@ def render_time_analysis(df, post_coords, countries_uz=None):
     trend = dfc.groupby('period').agg(
         Brutto=('Brutto','sum'), Netto=('Netto','sum'), Count=('ID','count')
     ).reset_index().sort_values('period')
+    trend['Brutto_mt'] = trend['Brutto'] / 1_000_000
+    trend['Netto_mt']  = trend['Netto']  / 1_000_000
 
     c1, c2 = st.columns(2)
     with c1:
         st.markdown(f'<div class="section-header">📈 {pl} bo\'yicha dinamika</div>', unsafe_allow_html=True)
         ft = go.Figure()
-        ft.add_trace(go.Bar(x=trend['period'], y=trend['Brutto'], name='Brutto',
+        ft.add_trace(go.Bar(x=trend['period'], y=trend['Brutto_mt'], name='Brutto (ming t)',
             marker_color='#00d4aa', opacity=0.85, yaxis='y1',
-            hovertemplate="%{x}<br>Brutto: %{y:,.0f} kg<extra></extra>"))
+            hovertemplate="%{x}<br>Brutto: %{y:,.2f} ming tonna<extra></extra>"))
         ft.add_trace(go.Scatter(x=trend['period'], y=trend['Count'], name='Deklaratsiya',
             yaxis='y2', line=dict(color='#f59e0b',width=2),
             mode='lines+markers', marker=dict(size=5),
             hovertemplate="%{x}<br>Soni: %{y:,.0f}<extra></extra>"))
         ft.update_layout(
-            yaxis=dict(title='Brutto (kg)', gridcolor='rgba(255,255,255,0.05)'),
+            yaxis=dict(title='Brutto (ming tonna)', gridcolor='rgba(255,255,255,0.05)'),
             yaxis2=dict(title='Deklaratsiya', overlaying='y', side='right', showgrid=False),
             legend=dict(orientation='h', y=1.1, x=0.5, xanchor='center'))
         ft = make_dark(ft, height=380)
@@ -758,27 +897,29 @@ def render_time_analysis(df, post_coords, countries_uz=None):
     with c2:
         st.markdown(f'<div class="section-header">🏛 Top-10 post: {pl}</div>', unsafe_allow_html=True)
         bp = dfc.groupby(['period','CHEGARA_POST'])['Brutto'].sum().reset_index()
+        bp['Brutto_mt'] = bp['Brutto'] / 1_000_000
         bp['Post'] = bp['CHEGARA_POST'].astype(str).map(lambda x: post_name_map.get(x, f"Post {x}"))
-        tops = bp.groupby('Post')['Brutto'].sum().nlargest(10).index
-        fl = px.line(bp[bp['Post'].isin(tops)], x='period', y='Brutto', color='Post',
+        tops = bp.groupby('Post')['Brutto_mt'].sum().nlargest(10).index
+        fl = px.line(bp[bp['Post'].isin(tops)], x='period', y='Brutto_mt', color='Post',
             color_discrete_sequence=MAIN_COLORS,
-            labels={'Brutto':'Brutto (kg)','period':pl,'Post':'Post'})
+            labels={'Brutto_mt':'Brutto (ming tonna)','period':pl,'Post':'Post'})
         fl.update_traces(line=dict(width=2), mode='lines+markers', marker=dict(size=4))
         fl = make_dark(fl, height=380)
         fl.update_layout(legend=dict(font=dict(size=10)))
         st.plotly_chart(fl, use_container_width=True, key="ta_post_line")
 
     # Heatmap
-    st.markdown('<div class="section-header">🗺 Post × Vaqt Heatmap</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">🗺 Post × Vaqt Heatmap (ming tonna)</div>', unsafe_allow_html=True)
     hd = dfc.groupby(['CHEGARA_POST','period'])['Brutto'].sum().reset_index()
+    hd['Brutto_mt'] = hd['Brutto'] / 1_000_000
     hd['Post'] = hd['CHEGARA_POST'].astype(str).map(lambda x: post_name_map.get(x, f"Post {x}"))
-    pivot = hd.pivot_table(index='Post', columns='period', values='Brutto', fill_value=0)
+    pivot = hd.pivot_table(index='Post', columns='period', values='Brutto_mt', fill_value=0)
     pivot = pivot.loc[pivot.sum(axis=1).nlargest(15).index]
     fh = go.Figure(data=go.Heatmap(
         z=pivot.values, x=pivot.columns.astype(str), y=pivot.index,
         colorscale=[[0,'#0a0e1a'],[0.2,'#064e3b'],[0.5,'#059669'],[0.8,'#f59e0b'],[1,'#ef4444']],
-        hovertemplate="Post: %{y}<br>Davr: %{x}<br>Brutto: %{z:,.0f} kg<extra></extra>",
-        colorbar=dict(title=dict(text="Brutto (kg)", font=dict(color='#e0e0e0')),
+        hovertemplate="Post: %{y}<br>Davr: %{x}<br>Brutto: %{z:,.2f} ming tonna<extra></extra>",
+        colorbar=dict(title=dict(text="Brutto (ming t)", font=dict(color='#e0e0e0')),
                       tickfont=dict(color='#e0e0e0'))))
     fh = make_dark(fh, height=460)
     st.plotly_chart(fh, use_container_width=True, key="ta_heatmap")
@@ -795,32 +936,34 @@ def render_analytics(df, post_coords, countries_uz, countries_en):
 
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown('<div class="section-header">🌍 Top-15 davlat (Brutto)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">🌍 Top-15 davlat (ming tonna)</div>', unsafe_allow_html=True)
         by_c = df.groupby('YUBORUVCHI_DAVLAT').agg(
             Brutto=('Brutto','sum'), Count=('ID','count')).reset_index()
         by_c = merge_country_names(by_c, countries_uz)
+        by_c['Brutto_mt'] = by_c['Brutto'] / 1_000_000
         top15 = by_c.nlargest(15,'Brutto')
-        fa = px.bar(top15, x='Brutto', y='Davlat', orientation='h',
-                    color='Brutto', color_continuous_scale=CYAN_SCALE,
-                    labels={'Brutto':'Brutto (kg)','Davlat':''},
-                    text=top15['Brutto'].apply(fmt))
+        fa = px.bar(top15, x='Brutto_mt', y='Davlat', orientation='h',
+                    color='Brutto_mt', color_continuous_scale=CYAN_SCALE,
+                    labels={'Brutto_mt':'Brutto (ming tonna)','Davlat':''},
+                    text=top15['Brutto_mt'].apply(lambda x: f"{x:,.1f}"))
         fa.update_traces(textposition='outside', textfont=dict(size=10,color='#e0e0e0'))
         fa = make_dark(fa, height=480)
         fa.update_layout(yaxis=dict(autorange='reversed'), coloraxis_showscale=False)
         st.plotly_chart(fa, use_container_width=True, key="an_country")
 
     with c2:
-        st.markdown('<div class="section-header">🏛 Top-15 post (Brutto)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">🏛 Top-15 post (ming tonna)</div>', unsafe_allow_html=True)
         by_p = df.groupby('CHEGARA_POST').agg(
             Brutto=('Brutto','sum'), Count=('ID','count')).reset_index()
         by_p['Post'] = by_p['CHEGARA_POST'].astype(str).map(
             lambda x: post_name_map.get(x, f"Post {x}"))
+        by_p['Brutto_mt'] = by_p['Brutto'] / 1_000_000
         top15p = by_p.nlargest(15,'Brutto')
-        fb = px.bar(top15p, x='Brutto', y='Post', orientation='h',
-                    color='Brutto',
+        fb = px.bar(top15p, x='Brutto_mt', y='Post', orientation='h',
+                    color='Brutto_mt',
                     color_continuous_scale=[[0,'#1e3a5f'],[0.5,'#3b82f6'],[1,'#93c5fd']],
-                    labels={'Brutto':'Brutto (kg)','Post':''},
-                    text=top15p['Brutto'].apply(fmt))
+                    labels={'Brutto_mt':'Brutto (ming tonna)','Post':''},
+                    text=top15p['Brutto_mt'].apply(lambda x: f"{x:,.1f}"))
         fb.update_traces(textposition='outside', textfont=dict(size=10,color='#e0e0e0'))
         fb = make_dark(fb, height=480)
         fb.update_layout(yaxis=dict(autorange='reversed'), coloraxis_showscale=False)
@@ -881,24 +1024,25 @@ def render_analytics(df, post_coords, countries_uz, countries_en):
             m2 = dfc2.merge(ref2, left_on='_code', right_on=ccode, how='left')
             ca = m2.groupby(cont_c).agg(Brutto=('Brutto','sum'), Count=('ID','count')).reset_index()
             ca = ca.dropna().sort_values('Brutto', ascending=False)
+            ca['Brutto_mt'] = ca['Brutto'] / 1_000_000
             q1, q2 = st.columns(2)
             with q1:
-                fe = px.bar(ca, x=cont_c, y='Brutto', color=cont_c,
-                    color_discrete_sequence=MAIN_COLORS, text=ca['Brutto'].apply(fmt),
-                    labels={'Brutto':'Brutto (kg)', cont_c:"Qit'a"},
-                    title="Qit'alar bo'yicha brutto")
+                fe = px.bar(ca, x=cont_c, y='Brutto_mt', color=cont_c,
+                    color_discrete_sequence=MAIN_COLORS,
+                    text=ca['Brutto_mt'].apply(lambda x: f"{x:,.1f}"),
+                    labels={'Brutto_mt':'Brutto (ming tonna)', cont_c:"Qit'a"},
+                    title="Qit'alar bo'yicha brutto (ming tonna)")
                 fe.update_traces(textposition='outside', textfont=dict(size=10,color='#e0e0e0'))
                 fe = make_dark(fe, height=350)
                 fe.update_layout(showlegend=False)
                 st.plotly_chart(fe, use_container_width=True, key="an_cont_bar")
             with q2:
-                ff = px.treemap(ca, path=[cont_c], values='Brutto', color='Brutto',
-                    color_continuous_scale=CYAN_SCALE, title="Qit'alar treemap")
+                ff = px.treemap(ca, path=[cont_c], values='Brutto_mt', color='Brutto_mt',
+                    color_continuous_scale=CYAN_SCALE,
+                    title="Qit'alar treemap (ming tonna)")
                 ff = make_dark(ff, height=350)
                 ff.update_layout(coloraxis_showscale=False)
                 st.plotly_chart(ff, use_container_width=True, key="an_cont_tree")
-
-    # Og'irlik farqi
 
 
 # ══════════════════════════════════════════════════════════════
@@ -969,7 +1113,7 @@ def main():
     # Header
     st.markdown("""<div class="main-header">
         <h1>📊 E-Tranzit Monitoring Dashboard</h1>
-        <p>O'zbekiston Respublikasi Bojxona Qo'mitasi — Elektron Tranzit Monitoring Tizimi v2.1</p>
+        <p>O'zbekiston Respublikasi Davlat Bojxona Qo'mitasi — Elektron Tranzit Monitoring Tizimi v2.1</p>
     </div>""", unsafe_allow_html=True)
 
     render_kpis(df_filtered)
@@ -991,7 +1135,7 @@ def main():
     st.markdown("""<div style="text-align:center; margin-top:40px; padding:16px;
         border-top:1px solid rgba(255,255,255,0.05);">
         <p style="color:#475569; font-size:12px;">
-            © 2025-2026 O'zbekiston Respublikasi Bojxona Qo'mitasi | E-Tranzit v2.1
+            © 2025-2026 O'zbekiston Respublikasi Davlat Bojxona Qo'mitasi | E-Tranzit v2.1
         </p></div>""", unsafe_allow_html=True)
 
 if __name__ == "__main__":
