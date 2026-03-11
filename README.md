@@ -33,12 +33,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## 🔐 Parollar
 
-| Rol   | Parol         | Imkoniyatlar                                    |
-|-------|---------------|-------------------------------------------------|
-| Admin | `sanjar1989`  | Parquet yuklash, tasniflagich fayllar boshqarish |
-| User  | `ilmiymarkaz` | Dashboard ko'rish, filtrlar                      |
 
 ## 📊 Dashboard imkoniyatlari
 
